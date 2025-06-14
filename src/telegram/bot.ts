@@ -8,7 +8,11 @@ dotenv.config()
 
 // Constants
 const DEATH_THRESHOLD = 2 // Number of missed reminders before deactivation
-const INTERVAL_TIME = 1 * 60 * 1000 // 30 minutes
+const INTERVAL_TIME = parseInt(process.env.TIME_INTERVAL_MINTUES!) * 60 * 1000
+
+// Allow withdrawals only once every 24 hours
+const WITHDRAWAL_INTERVAL = parseInt(process.env.WITHDRAWAL_INTERVAL_HOURS!) * 60 * 60 * 1000
+
 const MESSAGE_TEMPLATES = {
   WELCOME:
     `Hey there! I'm Tumbuh 🌱\n\n` +
@@ -26,8 +30,8 @@ const MESSAGE_TEMPLATES = {
 
   SETUP_COMPLETE: (username: string) =>
     `Hey ${username}! 👋\n\n` +
-    `Awesome! Your plant wallet is all set up!\n` +
-    `I'll be sending you requests to water me in exchange for some $$$.\n` +
+    `Awesome! My wallet is all set up!\n` +
+    `I'll be sending you requests to water me in exchange for some $$$ from now on.\n` +
     `Just keep your notifications on!\n\n` +
     `Let's grow together! 🌿`,
 
@@ -45,16 +49,17 @@ const MESSAGE_TEMPLATES = {
 
   WITHDRAW_SUCCESS: (amount: string, address: string, txHash: string) =>
     `Successfully withdrew ${amount} USDC to ${address}! 💰\n\n` +
-    `Your plant wallet has been reset and will start accumulating profits again. 🌱\n\n` +
     `Transaction hash: https://scrollscan.com/tx/${txHash}`,
 
   WITHDRAW_NO_PROFIT: `You don't have any committed profits to withdraw yet! Keep watering me to earn more! 💧`,
 
-  WITHDRAW_ERROR: `Oops! Something went wrong while trying to withdraw. Please try again later! 😅`,
+  WITHDRAW_ERROR: `Oops! Something went wrong while trying to withdraw. Please try again later!`,
 
-  WITHDRAW_INVALID_ADDRESS: `That doesn't look like a valid Ethereum address! Please provide a valid address. 🔍`,
+  WITHDRAW_INVALID_ADDRESS: `That doesn't look like a valid Ethereum address! Please provide a valid address.`,
 
   WITHDRAW_INVALID_FORMAT: `Please use the withdraw command like this:\n/withdraw 0xYourEthereumAddress\n\nFor example: /withdraw 0x1234...`,
+
+  WITHDRAW_TOO_SOON: `You can only withdraw once every 24 hours!`,
 }
 
 // Initialize Telegram bot
@@ -72,12 +77,15 @@ const sendReminder = async (
   userId: number
 ): Promise<void> => {
   const reminderMessage = `
-Hey ${username}! 🌱 *rustles leaves nervously* 
+Hey ${username}!
 
 I'm getting a bit thirsty over here!
 I've been growing and saved up ${availableFunds} USDC - I'd love to pay you for some water! 
 
-Can you help a thirsty plant out? Please reply to this message.
+Can you help a thirsty plant out? 
+Please reply "Done" to this message.
+
+🌱🌱🌱
 `
 
   try {
@@ -276,6 +284,11 @@ const handleWithdrawCommand = async (
       return
     }
 
+    if (user.lastWithdrawalAt && Date.now() - user.lastWithdrawalAt.getTime() < WITHDRAWAL_INTERVAL) {
+      await bot.sendMessage(chatId, MESSAGE_TEMPLATES.WITHDRAW_TOO_SOON)
+      return
+    }
+
     if (!user.profitCommitted || user.profitCommitted === '0') {
       await bot.sendMessage(chatId, MESSAGE_TEMPLATES.WITHDRAW_NO_PROFIT)
       return
@@ -302,6 +315,7 @@ const handleWithdrawCommand = async (
         lastReminderAt: new Date(),
         profitCommitted: '0',
         missedReminders: 0,
+        lastWithdrawalAt: new Date(),
       },
     })
 

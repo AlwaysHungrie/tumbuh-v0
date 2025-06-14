@@ -37,6 +37,8 @@ model User {
   updatedAt     DateTime @updatedAt
 
   requests      Request[]
+
+  lastWithdrawalAt DateTime?
 }
 
 model Request {
