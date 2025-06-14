@@ -1,4 +1,7 @@
 import { ethers } from 'ethers'
+import dotenv from 'dotenv'
+
+dotenv.config()
 
 export const SCROLL_MAINNET_RPC = 'https://rpc.scroll.io'
 export const SCROLL_MAINNET_CHAIN_ID = 534352

@@ -19,3 +19,18 @@ SHADOW_DATABASE_URL=postgresql://tumbuh_user:tumbuh_user_password@localhost:5432
 
 npx prisma migrate dev --name init
 npx prisma generate
+
+## Deploy
+
+chmod 400 awsKey.pem
+
+export EC2_DNS="ec2-$(echo $PUBLIC_IP | tr '.' '-').ap-south-1.compute.amazonaws.com"
+ssh -i awsKey.pem ubuntu@$EC2_DNS
+
+cd tumbuh-v0
+
+npm install
+
+npm run build
+
+pm2 start npm --name "tumbuh-v0" -- start

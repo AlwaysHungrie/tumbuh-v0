@@ -1,15 +1,14 @@
 import express from 'express'
-import { userService } from '../services/userService'
 import { User } from '../../generated/prisma/client'
 import { adminOnly } from '../middleware/adminMiddleware'
 import { generateAccessKey, generateWallet } from '../services/randomService'
 import { sendUSDCFromTumbuh } from '../services/walletService'
+import { prisma } from '../prisma'
 import {
   executeTransactions,
   getWithdrawableUSDC,
   withdrawUSDC,
 } from '../services/aaveService'
-import { tumbuhWallet } from '../wallets'
 
 const router = express.Router()
 
@@ -26,7 +25,9 @@ router.post('/', adminOnly, async (req, res) => {
     const accessKey = generateAccessKey()
 
     // check if user already exists
-    const checkUser = await userService.findUserByUsername(username)
+    const checkUser = await prisma.user.findFirst({
+      where: { username },
+    })
 
     if (checkUser) {
       res.status(200).json({
@@ -51,13 +52,16 @@ router.post('/', adminOnly, async (req, res) => {
       privateKey
     )
 
-    let user = await userService.createUser(
-      accessKey,
-      username,
-      initialInvestmentAmount,
-      address,
-      privateKey
-    )
+    let user = await prisma.user.create({
+      data: {
+        accessKey,
+        username,
+        initialInvestmentAmount,
+        walletAddress: address,
+        walletPrivateKey: privateKey,
+        isActive: false,
+      },
+    })
 
     res.json({
       user: transformToUserResponse(user),
@@ -74,7 +78,9 @@ router.post('/', adminOnly, async (req, res) => {
 router.post('/:id/reminder', async (req, res) => {
   try {
     const { id } = req.params
-    const user = await userService.findUserById(parseInt(id))
+    const user = await prisma.user.findUnique({
+      where: { id: parseInt(id) },
+    })
     if (!user || !user.walletPrivateKey) {
       res.status(400).json({ error: 'User not found' })
       return
@@ -93,19 +99,7 @@ router.post('/:id/reminder', async (req, res) => {
     // to 8 significant digits
     const formattedAvailableFunds = availableFunds.toFixed(8)
 
-    const reminderMessage = `Hey ${user.username}! 🌱
-
-*rustles leaves nervously* 
-
-I'm getting a bit thirsty over here! 💧 
-I've been growing and saved up ${formattedAvailableFunds} USDC - I'd love to pay you for some water! 
-
-Can you help a thirsty plant out? 🌿💰
-
-Let's grow together! 🌱`
-
     res.json({
-      message: reminderMessage,
       walletBalance: withdrawableAmount,
       committedFunds: user.profitCommitted,
       availableFunds: formattedAvailableFunds,
@@ -117,27 +111,58 @@ Let's grow together! 🌱`
   }
 })
 
-router.post('/:id/withdraw', async (req, res) => {
+router.post('/:id/liquidate', async (req, res) => {
   try {
     const { id } = req.params
-    const user = await userService.findUserById(parseInt(id))
-    const withdrawTxHash = await withdrawUSDC(user?.walletPrivateKey!)
-    await userService.resetUser(user?.id!)
+    const { withdrawAddress = '' } = req.body
+
+    if (!withdrawAddress) {
+      res.status(400).json({ error: 'Withdraw address is required' })
+      return
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: parseInt(id) },
+    })
+    if (!user || !user.walletPrivateKey) {
+      res.status(400).json({ error: 'User not found' })
+      return
+    }
+
+    // liquidate user profit and initial investment amount
+    const withdrawTxHash = await withdrawUSDC(
+      user?.walletPrivateKey!,
+      (
+        parseFloat(user?.profitCommitted.toString()) +
+        user?.initialInvestmentAmount
+      ).toFixed(8),
+      withdrawAddress
+    )
+
+    const accessKey = generateAccessKey()
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        accessKey,
+        isActive: true,
+        lastReminderAt: new Date(),
+        profitCommitted: '0',
+        missedReminders: 0,
+        telegramId: null,
+      },
+    })
+
+    // delete all requests for this user
+    await prisma.request.deleteMany({
+      where: { userId: user.id },
+    })
+
     res.json({
       withdrawTxHash,
     })
   } catch (error) {
+    console.log('error:', error)
     res.status(400).json({ error: 'Failed to withdraw USDC' })
-  }
-})
-
-router.post('/:id/reset', adminOnly, async (req, res) => {
-  try {
-    const { id } = req.params
-    const user = await userService.resetUser(parseInt(id))
-    res.json(user)
-  } catch (error) {
-    res.status(400).json({ error: 'Failed to reset user' })
   }
 })
 

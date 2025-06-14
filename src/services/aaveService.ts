@@ -1,18 +1,19 @@
 import { ethers } from 'ethers'
-import { serialize } from '@ethersproject/transactions'
 import {
   AAVE_POOL_ADDRESS,
   USDC_ABI,
   USDC_ADDRESS,
-  tumbuhWallet,
   SCROLL_MAINNET_RPC,
   SCROLL_MAINNET_CHAIN_ID,
   AAVE_POOL_ABI,
-  l1GasOracle,
   ATOKEN_ADDRESS,
 } from '../wallets'
+import {
+  ensureWalletHasGas,
+  estimateGasAndPrepareTransaction,
+} from './walletService'
 
-interface GasEstimationResult {
+export interface GasEstimationResult {
   requiredEthers: bigint
   l1Fees: bigint
   l1FeesWithBuffer: bigint
@@ -20,86 +21,11 @@ interface GasEstimationResult {
   l2GasEstimateWithBuffer: bigint
 }
 
-class AaveServiceError extends Error {
+export class AaveServiceError extends Error {
   constructor(message: string, public readonly cause?: unknown) {
     super(message)
     this.name = 'AaveServiceError'
   }
-}
-
-async function estimateGasAndPrepareTransaction(
-  contract: ethers.Contract,
-  functionName: string,
-  args: unknown[]
-): Promise<GasEstimationResult> {
-  try {
-    const populatedTransaction = await contract[
-      functionName
-    ].populateTransaction(...args)
-
-    const unsignedTransaction = {
-      data: populatedTransaction.data,
-      to: populatedTransaction.to,
-      value: populatedTransaction.value,
-      gasLimit: populatedTransaction.gasLimit,
-      gasPrice: populatedTransaction.gasPrice,
-      nonce: populatedTransaction.nonce,
-    }
-    const serializedTransaction = serialize(unsignedTransaction)
-
-    const l1Fees = await l1GasOracle.getL1Fee(serializedTransaction)
-    const l1FeesWithBuffer = (l1Fees * BigInt(1005)) / BigInt(1000)
-
-    const l2GasEstimate = await contract[functionName].estimateGas(...args)
-    const l2GasEstimateWithBuffer = (l2GasEstimate * BigInt(120)) / BigInt(100)
-
-    const gasPrice = await contract.runner?.provider?.getFeeData()
-    if (!gasPrice?.maxFeePerGas) {
-      throw new AaveServiceError('Gas price not found')
-    }
-
-    const requiredEthers =
-      l1FeesWithBuffer +
-      l2GasEstimateWithBuffer *
-        (gasPrice.maxFeePerGas ?? gasPrice.gasPrice ?? BigInt(0))
-
-    return {
-      requiredEthers,
-      l1Fees,
-      l1FeesWithBuffer,
-      l2GasEstimate,
-      l2GasEstimateWithBuffer,
-    }
-  } catch (error) {
-    throw new AaveServiceError('Failed to estimate gas', error)
-  }
-}
-
-async function ensureWalletHasGas(
-  provider: ethers.JsonRpcProvider,
-  userWallet: ethers.Wallet,
-  requiredEthers: bigint
-): Promise<void> {
-  const balance = await provider.getBalance(userWallet.address)
-  console.log('Current balance:', ethers.formatEther(balance))
-
-  const requiredBalance = requiredEthers - balance
-  console.log('Required balance:', ethers.formatEther(requiredBalance))
-
-  if (requiredBalance > 0) {
-    const tx = await tumbuhWallet.sendTransaction({
-      to: userWallet.address,
-      value: requiredBalance,
-    })
-    await tx.wait()
-    console.log('Sent gas funds to wallet')
-  }
-
-  const updatedBalance = await provider.getBalance(userWallet.address)
-  console.log(
-    'Updated balance:',
-    ethers.formatEther(updatedBalance ?? BigInt(0))
-  )
 }
 
 async function approveUSDC(
@@ -164,7 +90,16 @@ async function supplyUSDC(
   }
 }
 
-export async function withdrawUSDC(userPrivateKey: string) {
+export async function withdrawUSDC(
+  userPrivateKey: string,
+  amount: string,
+  withdrawAddress: string
+) {
+  // check if withdraw address is a valid address
+  if (!ethers.isAddress(withdrawAddress)) {
+    throw new AaveServiceError('Invalid withdraw address')
+  }
+
   try {
     const provider = new ethers.JsonRpcProvider(SCROLL_MAINNET_RPC, {
       chainId: SCROLL_MAINNET_CHAIN_ID,
@@ -191,45 +126,29 @@ export async function withdrawUSDC(userPrivateKey: string) {
       ethers.formatUnits(aTokenBalance, 6)
     )
 
-    // Get the exchange rate from the aToken contract
-    const { liquidityIndex, currentLiquidityRate } =
-      await aavePool.getReserveData(USDC_ADDRESS)
-    console.log('Raw liquidityIndex:', liquidityIndex.toString())
-    console.log(
-      'Formatted liquidityIndex:',
-      ethers.formatUnits(liquidityIndex, 27)
-    )
+    const amountInSmallestUnit = ethers.parseUnits(amount, 6)
 
-    // Calculate the actual USDC amount
-    // aTokenBalance is in 6 decimals (USDC)
-    // liquidityIndex is in 27 decimals (Ray)
-    // Convert both to proper decimal numbers first
-    const aTokenBalanceDecimal = Number(ethers.formatUnits(aTokenBalance, 6))
-    const liquidityIndexDecimal = Number(ethers.formatUnits(liquidityIndex, 27))
-
-    console.log('aTokenBalanceDecimal:', aTokenBalanceDecimal)
-    console.log('liquidityIndexDecimal:', liquidityIndexDecimal)
-
-    const withdrawableAmount = aTokenBalanceDecimal * liquidityIndexDecimal
-    console.log('Calculated withdrawableAmount:', withdrawableAmount)
+    if (aTokenBalance < amountInSmallestUnit) {
+      throw new AaveServiceError('Insufficient balance')
+    }
 
     // Estimate gas and ensure wallet has enough balance
     const gasEstimation = await estimateGasAndPrepareTransaction(
       aavePool,
       'withdraw',
-      [USDC_ADDRESS, aTokenBalance, userWallet.address]
+      [USDC_ADDRESS, amountInSmallestUnit, userWallet.address]
     )
     await ensureWalletHasGas(provider, userWallet, gasEstimation.requiredEthers)
 
     // Withdraw USDC from Aave Pool
     const withdrawTx = await aavePool.withdraw(
       USDC_ADDRESS,
-      aTokenBalance,
-      userWallet.address
+      amountInSmallestUnit,
+      withdrawAddress
     )
 
     console.log('USDC Withdraw transaction hash:', withdrawTx.hash)
-    return withdrawTx
+    return withdrawTx.hash
   } catch (error) {
     console.error('Error withdrawing USDC:', error)
     throw error
