@@ -1,11 +1,24 @@
 import express from 'express'
 import { userService } from '../services/userService'
+import { User } from '../../generated/prisma/client'
 import { adminOnly } from '../middleware/adminMiddleware'
 import { generateAccessKey, generateWallet } from '../services/randomService'
 import { sendUSDCFromTumbuh } from '../services/walletService'
-import { executeTransactions, withdrawUSDC } from '../services/aaveService'
+import {
+  executeTransactions,
+  getWithdrawableUSDC,
+  withdrawUSDC,
+} from '../services/aaveService'
+import { tumbuhWallet } from '../wallets'
 
 const router = express.Router()
+
+export type UserResponse = Omit<User, 'walletPrivateKey'>
+
+const transformToUserResponse = (user: User): UserResponse => {
+  const { walletPrivateKey, ...userResponse } = user
+  return userResponse
+}
 
 router.post('/', adminOnly, async (req, res) => {
   try {
@@ -14,19 +27,21 @@ router.post('/', adminOnly, async (req, res) => {
 
     // check if user already exists
     const checkUser = await userService.findUserByUsername(username)
-    let address = checkUser?.walletAddress
-    let privateKey = checkUser?.walletPrivateKey
 
-    if (!address || !privateKey) {
-      const { address: newAddress, privateKey: newPrivateKey } =
-        generateWallet()
-      address = newAddress
-      privateKey = newPrivateKey
+    if (checkUser) {
+      res.status(200).json({
+        message: 'User already exists',
+        user: transformToUserResponse(checkUser),
+      })
+
+      return
     }
+
+    const { address, privateKey } = generateWallet()
 
     // fund this wallet with initialInvestmentAmount USDC
     const initializeTxHash = await sendUSDCFromTumbuh(
-      address,
+      address!,
       initialInvestmentAmount,
       privateKey
     )
@@ -36,7 +51,7 @@ router.post('/', adminOnly, async (req, res) => {
       privateKey
     )
 
-    const user = await userService.createUser(
+    let user = await userService.createUser(
       accessKey,
       username,
       initialInvestmentAmount,
@@ -45,16 +60,60 @@ router.post('/', adminOnly, async (req, res) => {
     )
 
     res.json({
-      accessKey,
-      username,
-      initialInvestmentAmount,
+      user: transformToUserResponse(user),
       initializeTxHash,
       approveTxHash,
       supplyTxHash,
-      userId: user.id,
     })
   } catch (error) {
+    console.log('error:', error)
     res.status(400).json({ error: 'Failed to create user' })
+  }
+})
+
+router.post('/:id/reminder', async (req, res) => {
+  try {
+    const { id } = req.params
+    const user = await userService.findUserById(parseInt(id))
+    if (!user || !user.walletPrivateKey) {
+      res.status(400).json({ error: 'User not found' })
+      return
+    }
+
+    // get current price
+    const withdrawableAmount = await getWithdrawableUSDC(user.walletPrivateKey)
+    console.log('withdrawableAmount:', withdrawableAmount)
+
+    const interestGenerated =
+      parseFloat(withdrawableAmount) -
+      parseFloat(user.initialInvestmentAmount.toString())
+
+    const availableFunds = interestGenerated - parseFloat(user.profitCommitted)
+
+    // to 8 significant digits
+    const formattedAvailableFunds = availableFunds.toFixed(8)
+
+    const reminderMessage = `Hey ${user.username}! 🌱
+
+*rustles leaves nervously* 
+
+I'm getting a bit thirsty over here! 💧 
+I've been growing and saved up ${formattedAvailableFunds} USDC - I'd love to pay you for some water! 
+
+Can you help a thirsty plant out? 🌿💰
+
+Let's grow together! 🌱`
+
+    res.json({
+      message: reminderMessage,
+      walletBalance: withdrawableAmount,
+      committedFunds: user.profitCommitted,
+      availableFunds: formattedAvailableFunds,
+    })
+    return
+  } catch (error) {
+    console.log('error:', error)
+    res.status(400).json({ error: 'Failed to send reminder' })
   }
 })
 

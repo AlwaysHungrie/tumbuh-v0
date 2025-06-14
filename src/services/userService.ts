@@ -15,6 +15,7 @@ export const userService = {
         initialInvestmentAmount,
         walletAddress: address,
         walletPrivateKey: privateKey,
+        isActive: false,
       },
     })
   },
@@ -25,8 +26,17 @@ export const userService = {
       data: {
         isActive: true,
         lastReminderAt: new Date(),
+        profitCommitted: '0',
         missedReminders: 0,
       },
+    })
+  },
+
+
+  async resetMissedReminders(id: number) {
+    return prisma.user.update({
+      where: { id },
+      data: { missedReminders: 0 },
     })
   },
 
@@ -71,10 +81,40 @@ export const userService = {
     })
   },
 
+  async addProfitCommitted(userId: number, profitCommitted: string) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+    })
+    if (!user) {
+      throw new Error('User not found')
+    }
+    const newProfitCommitted =
+      parseFloat(user.profitCommitted) + parseFloat(profitCommitted)
+    return prisma.user.update({
+      where: { id: userId },
+      data: { profitCommitted: newProfitCommitted.toString() },
+    })
+  },
+
   async deactivateUser(userId: number) {
     return prisma.user.update({
       where: { id: userId },
       data: { isActive: false },
+    })
+  },
+
+  async getAllActiveUsers() {
+    return prisma.user.findMany({
+      where: {
+        isActive: true,
+        telegramId: { not: null },
+      },
+    })
+  },
+
+  async findUserByTelegramId(telegramId: string) {
+    return prisma.user.findUnique({
+      where: { telegramId },
     })
   },
 }

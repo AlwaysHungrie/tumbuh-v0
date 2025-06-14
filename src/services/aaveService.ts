@@ -33,9 +33,9 @@ async function estimateGasAndPrepareTransaction(
   args: unknown[]
 ): Promise<GasEstimationResult> {
   try {
-    const populatedTransaction = await contract[functionName].populateTransaction(
-      ...args
-    )
+    const populatedTransaction = await contract[
+      functionName
+    ].populateTransaction(...args)
 
     const unsignedTransaction = {
       data: populatedTransaction.data,
@@ -164,9 +164,7 @@ async function supplyUSDC(
   }
 }
 
-export async function withdrawUSDC(
-  userPrivateKey: string
-) {
+export async function withdrawUSDC(userPrivateKey: string) {
   try {
     const provider = new ethers.JsonRpcProvider(SCROLL_MAINNET_RPC, {
       chainId: SCROLL_MAINNET_CHAIN_ID,
@@ -187,7 +185,33 @@ export async function withdrawUSDC(
       userWallet
     )
     const aTokenBalance = await aTokenContract.balanceOf(userWallet.address)
-    console.log('aTokenBalance:', aTokenBalance)
+    console.log('Raw aTokenBalance:', aTokenBalance.toString())
+    console.log(
+      'Formatted aTokenBalance:',
+      ethers.formatUnits(aTokenBalance, 6)
+    )
+
+    // Get the exchange rate from the aToken contract
+    const { liquidityIndex, currentLiquidityRate } =
+      await aavePool.getReserveData(USDC_ADDRESS)
+    console.log('Raw liquidityIndex:', liquidityIndex.toString())
+    console.log(
+      'Formatted liquidityIndex:',
+      ethers.formatUnits(liquidityIndex, 27)
+    )
+
+    // Calculate the actual USDC amount
+    // aTokenBalance is in 6 decimals (USDC)
+    // liquidityIndex is in 27 decimals (Ray)
+    // Convert both to proper decimal numbers first
+    const aTokenBalanceDecimal = Number(ethers.formatUnits(aTokenBalance, 6))
+    const liquidityIndexDecimal = Number(ethers.formatUnits(liquidityIndex, 27))
+
+    console.log('aTokenBalanceDecimal:', aTokenBalanceDecimal)
+    console.log('liquidityIndexDecimal:', liquidityIndexDecimal)
+
+    const withdrawableAmount = aTokenBalanceDecimal * liquidityIndexDecimal
+    console.log('Calculated withdrawableAmount:', withdrawableAmount)
 
     // Estimate gas and ensure wallet has enough balance
     const gasEstimation = await estimateGasAndPrepareTransaction(
@@ -212,6 +236,27 @@ export async function withdrawUSDC(
   }
 }
 
+export async function getWithdrawableUSDC(userPrivateKey: string) {
+  try {
+    const provider = new ethers.JsonRpcProvider(SCROLL_MAINNET_RPC, {
+      chainId: SCROLL_MAINNET_CHAIN_ID,
+      name: 'scroll',
+    })
+    const userWallet = new ethers.Wallet(userPrivateKey, provider)
+
+    // Get the user's aToken balance (supplied USDC)
+    const aTokenContract = new ethers.Contract(
+      ATOKEN_ADDRESS,
+      USDC_ABI,
+      userWallet
+    )
+    const aTokenBalance = await aTokenContract.balanceOf(userWallet.address)
+    return ethers.formatUnits(aTokenBalance, 6)
+  } catch (error) {
+    throw new AaveServiceError('Failed to get withdrawable USDC amount', error)
+  }
+}
+
 export async function executeTransactions(userPrivateKey: string) {
   try {
     const provider = new ethers.JsonRpcProvider(SCROLL_MAINNET_RPC, {
@@ -229,7 +274,7 @@ export async function executeTransactions(userPrivateKey: string) {
     console.log('USDC Supply confirmed')
 
     return {
-      approveTxHash: null,
+      approveTxHash: approveTx.hash,
       supplyTxHash: supplyTx.hash,
     }
   } catch (error) {
